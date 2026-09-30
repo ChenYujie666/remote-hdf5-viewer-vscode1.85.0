@@ -27,10 +27,18 @@ def value(x):
  return x
 try:
  with h5py.File(path,'r') as f:
+  names=f.get('/_meta/names')
+  labels=[str(value(x)).strip() for x in names[()]] if isinstance(names,h5py.Dataset) and len(names.shape)==1 and names.shape[0]<=10000 else []
+  def label_for(name):
+   match=re.fullmatch(r'col_(\d+)',name)
+   if match:
+    index=int(match.group(1))
+    if index<len(labels) and labels[index]: return labels[index]
+   return name
   if action=='tree':
    out=[]
    def visit(n,o):
-    if isinstance(o,h5py.Dataset): out.append({'path':'/'+n,'kind':'dataset','shape':list(o.shape),'dtype':str(o.dtype),'size':int(o.size)})
+    if isinstance(o,h5py.Dataset): out.append({'path':'/'+n,'kind':'dataset','shape':list(o.shape),'dtype':str(o.dtype),'size':int(o.size),'label':label_for(n)})
     else: out.append({'path':'/'+n,'kind':'group'})
    f.visititems(visit); print(json.dumps({'tree':out},default=str))
   elif action=='wide':
@@ -42,10 +50,11 @@ try:
    if not candidates: raise ValueError('No root-level col_N datasets found')
    longest=max(obj.shape[0] for _,_,obj in candidates)
    chosen=sorted((item for item in candidates if item[2].shape[0]==longest),key=lambda item:item[0])
-   columns=[name for _,name,_ in chosen]
+   sources=[name for _,name,_ in chosen]
+   columns=[label_for(name) for name in sources]
    samples=[obj[:50] for _,_,obj in chosen]
    rows=[[value(sample[i]) for sample in samples] for i in range(min(50,longest))]
-   print(json.dumps({'path':'Longest col datasets','shape':[longest,len(columns)],'dtype':'mixed','columns':columns,'rows':rows,'totalRows':longest,'columnLimit':len(columns),'extraDimensionsLimited':False},default=str))
+   print(json.dumps({'path':'Longest col datasets','shape':[longest,len(columns)],'dtype':'mixed','columns':columns,'sourceColumns':sources,'rows':rows,'totalRows':longest,'columnLimit':len(columns),'extraDimensionsLimited':False},default=str))
   elif action=='data':
    name=sys.argv[3]; d=f[name]
    if not isinstance(d,h5py.Dataset): raise ValueError(name+' is not a dataset')
@@ -91,14 +100,14 @@ async function inspectFile(file, action, dataset) {
 function html(webview, file, tree, error) {
   const nonce = Math.random().toString(36).slice(2);
   const safe = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const rows = (tree || []).map((x, i) => `<button class="node ${x.kind}" data-index="${i}" title="${safe(x.path)}">${x.kind === 'dataset' ? '▦' : '▾'} ${safe(x.path)} ${x.shape ? '<span>'+safe(x.shape.join(' × '))+'</span>' : ''}</button>`).join('');
+  const rows = (tree || []).map((x, i) => `<button class="node ${x.kind}" data-index="${i}" title="${safe(x.path)}${x.label && x.label !== x.path.slice(1) ? ' · '+safe(x.label) : ''}">${x.kind === 'dataset' ? '▦' : '▾'} ${safe(x.path)} ${x.label && x.label !== x.path.slice(1) ? '<span>· '+safe(x.label)+'</span>' : ''} ${x.shape ? '<span>'+safe(x.shape.join(' × '))+'</span>' : ''}</button>`).join('');
   const hasWide = (tree || []).some(x => x.kind === 'dataset' && /^\/col_\d+$/.test(x.path) && (!x.shape || x.shape.length === 1));
   return `<!doctype html><html><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';"><style>
-body{font:13px var(--vscode-font-family);color:var(--vscode-foreground);padding:0 14px}.bar{display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--vscode-panel-border);padding:8px 0}.path{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:12px;margin-top:12px}.focus .layout{grid-template-columns:minmax(0,1fr)}.focus .tree{display:none}.tree{overflow:auto;max-height:calc(100vh - 100px)}button.node{display:block;width:100%;text-align:left;border:0;background:transparent;color:inherit;padding:5px 8px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}button.node:hover{background:var(--vscode-list-hoverBackground)}button.node span{color:var(--vscode-descriptionForeground);margin-left:6px}.panel{min-width:0;overflow:hidden;max-height:calc(100vh - 120px)}.table-wrap{overflow:auto;max-height:calc(100vh - 150px)}table{border-collapse:collapse;min-width:100%;width:max-content;white-space:nowrap;font-variant-numeric:tabular-nums}th,td{border:1px solid var(--vscode-panel-border);padding:4px 8px;text-align:left}th{position:sticky;top:0;background:var(--vscode-editor-background);font-weight:600}th:first-child,td:first-child{position:sticky;left:0;background:var(--vscode-editor-background);z-index:1}th:first-child{z-index:2}.muted{color:var(--vscode-descriptionForeground)}.error{color:var(--vscode-errorForeground)}</style></head><body>
+body{font:13px var(--vscode-font-family);color:var(--vscode-foreground);padding:0 14px}.bar{display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--vscode-panel-border);padding:8px 0}.path{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:12px;margin-top:12px}.focus .layout{grid-template-columns:minmax(0,1fr)}.focus .tree{display:none}.tree{overflow:auto;max-height:calc(100vh - 100px)}button.node{display:block;width:100%;text-align:left;border:0;background:transparent;color:inherit;padding:5px 8px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}button.node:hover{background:var(--vscode-list-hoverBackground)}button.node span{color:var(--vscode-descriptionForeground);margin-left:6px}.panel{min-width:0;overflow:hidden;max-height:calc(100vh - 120px)}.table-wrap{overflow:auto;max-height:calc(100vh - 150px)}table{border-collapse:collapse;min-width:100%;width:max-content;white-space:nowrap;font-variant-numeric:tabular-nums}th,td{border:1px solid var(--vscode-panel-border);padding:4px 8px;text-align:left}th{position:sticky;top:0;background:var(--vscode-editor-background);font-weight:600}th small{display:block;font-size:11px;font-weight:400;color:var(--vscode-descriptionForeground)}th:first-child,td:first-child{position:sticky;left:0;background:var(--vscode-editor-background);z-index:1}th:first-child{z-index:2}.muted{color:var(--vscode-descriptionForeground)}.error{color:var(--vscode-errorForeground)}</style></head><body>
 <div class="bar"><strong>HDF5 Viewer</strong><div class="path" title="${safe(file)}">${safe(file)}</div>${hasWide ? '<button id="allCols">All longest col</button>' : ''}<button id="toggleTree">Hide tree</button><button id="refresh">Refresh</button></div><div class="layout"><div class="tree">${rows || '<div class="muted">No objects found.</div>'}</div><div id="panel" class="panel"><div class="${error ? 'error' : 'muted'}">${safe(error || 'Select a dataset to preview its first 50 rows.')}</div></div></div>
 <script nonce="${nonce}">const vscode=acquireVsCodeApi();const nodes=[...document.querySelectorAll('.node')];const panel=document.getElementById('panel');
 function cell(value){const e=document.createElement('td');e.textContent=typeof value==='object'?JSON.stringify(value):String(value);return e;}
-function render(result){panel.replaceChildren();if(!result||result.error){panel.textContent=result&&result.error||'Unable to preview dataset.';return;}const info=document.createElement('div');info.className='muted';info.textContent=result.path+' · '+result.dtype+' · shape '+JSON.stringify(result.shape)+' · showing '+result.rows.length+' of '+result.totalRows+' rows'+(result.shape.length>1&&result.shape[1]>result.columnLimit?' · first '+result.columnLimit+' columns':'')+(result.extraDimensionsLimited?' · higher dimensions sampled':'');panel.appendChild(info);const wrap=document.createElement('div');wrap.className='table-wrap';const table=document.createElement('table');const head=document.createElement('tr');['#',...result.columns].forEach(v=>{const e=document.createElement('th');e.textContent=v;head.appendChild(e);});table.appendChild(head);result.rows.forEach((row,i)=>{const tr=document.createElement('tr');tr.appendChild(cell(i));row.forEach(v=>tr.appendChild(cell(v)));table.appendChild(tr);});wrap.appendChild(table);panel.appendChild(wrap);}
+function render(result){panel.replaceChildren();if(!result||result.error){panel.textContent=result&&result.error||'Unable to preview dataset.';return;}const info=document.createElement('div');info.className='muted';info.textContent=result.path+' · '+result.dtype+' · shape '+JSON.stringify(result.shape)+' · showing '+result.rows.length+' of '+result.totalRows+' rows'+(result.shape.length>1&&result.shape[1]>result.columnLimit?' · first '+result.columnLimit+' columns':'')+(result.extraDimensionsLimited?' · higher dimensions sampled':'');panel.appendChild(info);const wrap=document.createElement('div');wrap.className='table-wrap';const table=document.createElement('table');const head=document.createElement('tr');['#',...result.columns].forEach((v,i)=>{const e=document.createElement('th');e.textContent=v;if(i>0&&result.sourceColumns&&result.sourceColumns[i-1]!==v){const source=document.createElement('small');source.textContent=result.sourceColumns[i-1];e.appendChild(source);}head.appendChild(e);});table.appendChild(head);result.rows.forEach((row,i)=>{const tr=document.createElement('tr');tr.appendChild(cell(i));row.forEach(v=>tr.appendChild(cell(v)));table.appendChild(tr);});wrap.appendChild(table);panel.appendChild(wrap);}
 let activeRequest=0;function request(type,index){panel.textContent='Loading…';vscode.postMessage({type,index,requestId:++activeRequest});}nodes.forEach((n,i)=>{if(n.classList.contains('dataset'))n.onclick=()=>request('data',i);});const toggle=document.getElementById('toggleTree');toggle.onclick=()=>{document.body.classList.toggle('focus');toggle.textContent=document.body.classList.contains('focus')?'Show tree':'Hide tree';};const allCols=document.getElementById('allCols');if(allCols)allCols.onclick=()=>{document.body.classList.add('focus');toggle.textContent='Show tree';request('wide');};document.getElementById('refresh').onclick=()=>vscode.postMessage({type:'refresh'});window.addEventListener('message',e=>{const m=e.data;if(m.type==='data'&&m.requestId===activeRequest)render(m.error?{error:m.error}:m.data);});if(allCols)allCols.click();</script></body></html>`;
 }
 

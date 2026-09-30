@@ -2,7 +2,7 @@
   "name": "remote-hdf5-viewer",
   "displayName": "Remote HDF5 Viewer",
   "description": "Browse HDF5 files on local or Remote SSH hosts without downloading them.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "local-dev",
   "license": "MIT",
   "engines": { "vscode": ">=1.85.0" },

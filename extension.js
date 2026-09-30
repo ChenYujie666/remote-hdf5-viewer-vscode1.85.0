@@ -11,43 +11,68 @@ function run(program, args, cwd) {
 }
 
 function pyScript() {
-  return String.raw`import sys,json
+  return String.raw`import sys,json,math
 try:
- import h5py
+ import h5py,numpy as np
 except Exception as e:
  print(json.dumps({'error':'Python h5py is not installed: '+str(e)})); sys.exit(0)
 path=sys.argv[1]; action=sys.argv[2]
+def value(x):
+ if isinstance(x,np.void) and x.dtype.names: return {n:value(x[n]) for n in x.dtype.names}
+ if isinstance(x,np.ndarray): return [value(v) for v in x]
+ if isinstance(x,np.generic): return value(x.item())
+ if isinstance(x,bytes): return x.decode('utf-8','replace')
+ if isinstance(x,float) and not math.isfinite(x): return str(x)
+ if isinstance(x,complex): return str(x)
+ return x
 try:
  with h5py.File(path,'r') as f:
   if action=='tree':
    out=[]
    def visit(n,o):
-    if isinstance(o,h5py.Dataset): out.append({'path':n,'kind':'dataset','shape':list(o.shape),'dtype':str(o.dtype),'size':int(o.size)})
-    else: out.append({'path':n,'kind':'group'})
+    if isinstance(o,h5py.Dataset): out.append({'path':'/'+n,'kind':'dataset','shape':list(o.shape),'dtype':str(o.dtype),'size':int(o.size)})
+    else: out.append({'path':'/'+n,'kind':'group'})
    f.visititems(visit); print(json.dumps({'tree':out},default=str))
   elif action=='data':
-   name=sys.argv[3]; limit=int(sys.argv[4])
-   d=f[name]; x=d[tuple(slice(0,min(limit,s)) for s in d.shape)] if d.shape else d[()]
-   print(json.dumps({'path':name,'shape':list(d.shape),'dtype':str(d.dtype),'data':x.tolist() if hasattr(x,'tolist') else x},default=str))
+   name=sys.argv[3]; d=f[name]
+   if not isinstance(d,h5py.Dataset): raise ValueError(name+' is not a dataset')
+   shape=list(d.shape); limit=50; col_limit=50
+   if not shape:
+    columns=['value']; rows=[[value(d[()])]]
+   elif len(shape)==1 and d.dtype.names:
+    columns=list(d.dtype.names); rows=[[value(rec[n]) for n in columns] for rec in d[:limit]]
+   elif len(shape)==1:
+    columns=['value']; rows=[[value(x)] for x in d[:limit]]
+   else:
+    count=min(col_limit,shape[1]); columns=['col '+str(i) for i in range(count)]
+    selection=(slice(0,limit),slice(0,count))+tuple(slice(0,min(4,s)) for s in shape[2:])
+    sample=d[selection]; rows=[[value(v) for v in row] for row in sample]
+   print(json.dumps({'path':name,'shape':shape,'dtype':str(d.dtype),'columns':columns,'rows':rows,'totalRows':shape[0] if shape else 1,'columnLimit':col_limit,'extraDimensionsLimited':len(shape)>2},default=str))
 except Exception as e: print(json.dumps({'error':str(e)}))`;
 }
 
 async function inspectFile(file, action, dataset) {
-  try {
-    const out = await run('h5ls', action === 'tree' ? ['-r', file] : [file]);
-    if (action === 'tree') {
-      const tree = out.split(/\r?\n/).filter(Boolean).map(line => {
-        const m = line.match(/^\s*(.*?)(?:\s+\{(.*)\})?\s*$/);
-        return m ? { path: m[1], kind: m[2] ? 'dataset' : 'group', detail: m[2] || '' } : null;
-      }).filter(Boolean);
-      return { tree };
-    }
-  } catch (_) {}
   const script = pyScript();
   const args = ['-c', script, file, action];
-  if (dataset) args.push(dataset, '100');
-  try { return JSON.parse(await run('python3', args)); }
-  catch (e) { return { error: '需要远程主机安装 hdf5-tools 或 Python h5py。' + (e.stderr || e.message) }; }
+  if (dataset) args.push(dataset);
+  let pythonError;
+  try {
+    const pythonPath = vscode.workspace.getConfiguration('hdf5Viewer').get('pythonPath', 'python3');
+    const result = JSON.parse(await run(pythonPath, args));
+    if (!result.error || action === 'data') return result;
+    pythonError = result.error;
+  } catch (e) { pythonError = e.stderr || e.message; }
+  if (action === 'tree') {
+    try {
+      const out = await run('h5ls', ['-r', file]);
+      const tree = out.split(/\r?\n/).filter(Boolean).map(line => {
+        const m = line.match(/^\s*(\S+)\s+(Group|Dataset)(?:\s+\{([^}]*)\})?/);
+        return m ? { path: m[1], kind: m[2].toLowerCase(), detail: m[3] || '' } : null;
+      }).filter(Boolean);
+      return { tree };
+    } catch (_) {}
+  }
+  return { error: '远程服务器需要 python3 和 h5py 才能预览数据。' + (pythonError ? ' ' + pythonError : '') };
 }
 
 function html(webview, file, tree, error) {
@@ -55,9 +80,12 @@ function html(webview, file, tree, error) {
   const safe = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const rows = (tree || []).map((x, i) => `<button class="node ${x.kind}" data-index="${i}" title="${safe(x.path)}">${x.kind === 'dataset' ? '▦' : '▾'} ${safe(x.path)} ${x.shape ? '<span>'+safe(x.shape.join(' × '))+'</span>' : ''}</button>`).join('');
   return `<!doctype html><html><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';"><style>
-body{font:13px var(--vscode-font-family);color:var(--vscode-foreground);padding:0 14px}.bar{display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--vscode-panel-border);padding:8px 0}.path{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.layout{display:grid;grid-template-columns:minmax(260px,35%) 1fr;gap:16px;margin-top:12px}.tree{overflow:auto;max-height:calc(100vh - 100px)}button.node{display:block;width:100%;text-align:left;border:0;background:transparent;color:inherit;padding:5px 8px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}button.node:hover{background:var(--vscode-list-hoverBackground)}button.node span{color:var(--vscode-descriptionForeground);margin-left:6px}.panel{white-space:pre-wrap;overflow:auto;max-height:calc(100vh - 120px)}.muted{color:var(--vscode-descriptionForeground)}.error{color:var(--vscode-errorForeground)}</style></head><body>
-<div class="bar"><strong>HDF5 Viewer</strong><div class="path" title="${safe(file)}">${safe(file)}</div><button id="refresh">Refresh</button></div><div class="layout"><div class="tree">${rows || '<div class="muted">No objects found.</div>'}</div><pre id="panel" class="panel">${safe(error || 'Select a dataset to preview its first 100 values.')}</pre></div>
-<script nonce="${nonce}">const vscode=acquireVsCodeApi();const nodes=[...document.querySelectorAll('.node')];const panel=document.getElementById('panel');nodes.forEach((n,i)=>n.onclick=()=>{panel.textContent='Loading…';vscode.postMessage({type:'data',index:i});});document.getElementById('refresh').onclick=()=>vscode.postMessage({type:'refresh'});window.addEventListener('message',e=>{const m=e.data;if(m.type==='data')panel.textContent=m.error||JSON.stringify(m.data,null,2);if(m.type==='tree')location.reload();});</script></body></html>`;
+body{font:13px var(--vscode-font-family);color:var(--vscode-foreground);padding:0 14px}.bar{display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--vscode-panel-border);padding:8px 0}.path{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.layout{display:grid;grid-template-columns:minmax(260px,35%) 1fr;gap:16px;margin-top:12px}.tree{overflow:auto;max-height:calc(100vh - 100px)}button.node{display:block;width:100%;text-align:left;border:0;background:transparent;color:inherit;padding:5px 8px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}button.node:hover{background:var(--vscode-list-hoverBackground)}button.node span{color:var(--vscode-descriptionForeground);margin-left:6px}.panel{overflow:auto;max-height:calc(100vh - 120px)}.table-wrap{overflow:auto;max-height:calc(100vh - 150px)}table{border-collapse:collapse;min-width:100%;white-space:nowrap}th,td{border:1px solid var(--vscode-panel-border);padding:4px 8px;text-align:left}th{position:sticky;top:0;background:var(--vscode-editor-background);font-weight:600}.muted{color:var(--vscode-descriptionForeground)}.error{color:var(--vscode-errorForeground)}</style></head><body>
+<div class="bar"><strong>HDF5 Viewer</strong><div class="path" title="${safe(file)}">${safe(file)}</div><button id="refresh">Refresh</button></div><div class="layout"><div class="tree">${rows || '<div class="muted">No objects found.</div>'}</div><div id="panel" class="panel"><div class="${error ? 'error' : 'muted'}">${safe(error || 'Select a dataset to preview its first 50 rows.')}</div></div></div>
+<script nonce="${nonce}">const vscode=acquireVsCodeApi();const nodes=[...document.querySelectorAll('.node')];const panel=document.getElementById('panel');
+function cell(value){const e=document.createElement('td');e.textContent=typeof value==='object'?JSON.stringify(value):String(value);return e;}
+function render(result){panel.replaceChildren();if(!result||result.error){panel.textContent=result&&result.error||'Unable to preview dataset.';return;}const info=document.createElement('div');info.className='muted';info.textContent=result.path+' · '+result.dtype+' · shape '+JSON.stringify(result.shape)+' · showing '+result.rows.length+' of '+result.totalRows+' rows'+(result.shape.length>1&&result.shape[1]>result.columnLimit?' · first '+result.columnLimit+' columns':'')+(result.extraDimensionsLimited?' · higher dimensions sampled':'');panel.appendChild(info);const wrap=document.createElement('div');wrap.className='table-wrap';const table=document.createElement('table');const head=document.createElement('tr');['#',...result.columns].forEach(v=>{const e=document.createElement('th');e.textContent=v;head.appendChild(e);});table.appendChild(head);result.rows.forEach((row,i)=>{const tr=document.createElement('tr');tr.appendChild(cell(i));row.forEach(v=>tr.appendChild(cell(v)));table.appendChild(tr);});wrap.appendChild(table);panel.appendChild(wrap);}
+nodes.forEach((n,i)=>{if(n.classList.contains('dataset'))n.onclick=()=>{panel.textContent='Loading…';vscode.postMessage({type:'data',index:i});};});document.getElementById('refresh').onclick=()=>vscode.postMessage({type:'refresh'});window.addEventListener('message',e=>{const m=e.data;if(m.type==='data')render(m.error?{error:m.error}:m.data);});</script></body></html>`;
 }
 
 class HdfDocument { constructor(uri){this.uri=uri;this.key=uri.toString();} dispose(){} }

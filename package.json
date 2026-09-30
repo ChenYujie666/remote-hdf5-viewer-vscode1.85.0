@@ -1,0 +1,24 @@
+{
+  "name": "remote-hdf5-viewer",
+  "displayName": "Remote HDF5 Viewer",
+  "description": "Browse HDF5 files on local or Remote SSH hosts without downloading them.",
+  "version": "0.1.0",
+  "publisher": "local-dev",
+  "license": "MIT",
+  "engines": { "vscode": ">=1.85.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onCustomEditor:hdf5.viewer", "onCommand:hdf5Viewer.open"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [{ "command": "hdf5Viewer.open", "title": "HDF5: Open Viewer" }],
+    "menus": {
+      "explorer/context": [{ "command": "hdf5Viewer.open", "when": "resourceExtname == .h5 || resourceExtname == .hdf5 || resourceExtname == .he5" }]
+    },
+    "customEditors": [{
+      "viewType": "hdf5.viewer",
+      "displayName": "HDF5 Viewer",
+      "selector": [{ "filenamePattern": "*.h5" }, { "filenamePattern": "*.hdf5" }, { "filenamePattern": "*.he5" }],
+      "priority": "default"
+    }]
+  }
+}

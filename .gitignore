@@ -1,0 +1,6 @@
+*.vsix
+!outputs/remote-hdf5-viewer-*.vsix
+h5.json
+work/
+extension/*
+!extension/LICENSE.txt
